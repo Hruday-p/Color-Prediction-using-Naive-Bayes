@@ -20,6 +20,17 @@ st.set_page_config(
 )
 
 st.title("🧪 Live pH & Color Predictor")
+# --- TEMPORARY DEBUGGING CODE ---
+# Add this to see exactly what Streamlit is reading from your secrets.
+st.subheader("⚠️ DEBUGGING INFORMATION")
+try:
+    creds_to_check = st.secrets["firebase_credentials"]
+    st.write("Type of `firebase_credentials` secret:", type(creds_to_check))
+    # The line below will display the credentials in a structured way.
+    st.json(creds_to_check)
+except Exception as e:
+    st.error(f"Could not access secrets['firebase_credentials']: {e}")
+# --- END OF DEBUGGING CODE ---
 st.write("This web app uses a trained Machine Learning model to predict the pH category based on live RGB color values from a sensor.")
 
 # ==============================================================================
