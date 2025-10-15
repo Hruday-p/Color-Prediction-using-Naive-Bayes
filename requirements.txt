@@ -3,7 +3,6 @@ pandas
 numpy
 scikit-learn
 joblib
-matplotlib
 colour-science
-pyserial
-keyboard
+matplotlib
+firebase-admin
