@@ -2,155 +2,157 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, db
 import pandas as pd
+import joblib
 import numpy as np
 import colour
-import joblib
+from matplotlib.colors import to_rgb, CSS4_COLORS
+import matplotlib.pyplot as plt
+import time
 
-# --- PAGE CONFIG ---
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="Live pH & Color Predictor",
     page_icon="🧪",
-    layout="wide",
+    layout="wide"
 )
 
 # --- FIREBASE INITIALIZATION ---
-# This is cached for performance, so it only runs once.
 @st.cache_resource
 def init_firebase():
     """Initialize the Firebase app, returns a reference to the database."""
     try:
+        # Build the credentials dictionary from secrets
+        creds_dict = {
+            "type": st.secrets["firebase_credentials"]["type"],
+            "project_id": st.secrets["firebase_credentials"]["project_id"],
+            "private_key_id": st.secrets["firebase_credentials"]["private_key_id"],
+            "private_key": st.secrets["firebase_credentials"]["private_key"],
+            "client_email": st.secrets["firebase_credentials"]["client_email"],
+            "client_id": st.secrets["firebase_credentials"]["client_id"],
+            "auth_uri": st.secrets["firebase_credentials"]["auth_uri"],
+            "token_uri": st.secrets["firebase_credentials"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase_credentials"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase_credentials"]["client_x509_cert_url"],
+        }
+        database_url = st.secrets["firebase_database"]["databaseURL"]
+        
         if not firebase_admin._apps:
-            # Build the credentials dictionary from secrets
-            creds_dict = {
-                "type": st.secrets["firebase_credentials"]["type"],
-                "project_id": st.secrets["firebase_credentials"]["project_id"],
-                "private_key_id": st.secrets["firebase_credentials"]["private_key_id"],
-                "private_key": st.secrets["firebase_credentials"]["private_key"],
-                "client_email": st.secrets["firebase_credentials"]["client_email"],
-                "client_id": st.secrets["firebase_credentials"]["client_id"],
-                "auth_uri": st.secrets["firebase_credentials"]["auth_uri"],
-                "token_uri": st.secrets["firebase_credentials"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["firebase_credentials"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["firebase_credentials"]["client_x509_cert_url"],
-            }
-            database_url = st.secrets["firebase_database"]["databaseURL"]
-            
             cred = credentials.Certificate(creds_dict)
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': database_url
-            })
+            firebase_admin.initialize_app(cred, {'databaseURL': database_url})
         
         return db.reference('/')
     except Exception as e:
         st.error(f"Failed to initialize Firebase: {e}")
-        st.warning("Please ensure your Firebase credentials and database URL are correctly configured in Streamlit's secrets.")
+        st.info("Please ensure your Firebase secrets are correctly configured.")
         return None
+
+db_ref = init_firebase()
 
 # --- LOAD ML MODEL AND SCALER ---
 @st.cache_resource
-def load_model():
-    """Load the trained model and scaler."""
+def load_model_and_scaler():
+    """Loads the ML model and scaler."""
     try:
-        model = joblib.load('gaussian_nb.pkl')
-        scaler = joblib.load('scaler_nb.pkl')
+        model = joblib.load("gaussian_nb.pkl")
+        scaler = joblib.load("scaler_nb.pkl")
         return model, scaler
-    except FileNotFoundError:
-        st.error("Model or scaler files not found. Please ensure 'gaussian_nb.pkl' and 'scaler_nb.pkl' are in the repository.")
+    except Exception as e:
+        st.error(f"Error loading model/scaler files: {e}")
         return None, None
 
-ml_model, scaler = load_model()
+ml_model, scaler = load_model_and_scaler()
 
 # --- HELPER FUNCTIONS ---
 def rgb_to_xy(rgb):
-    """Convert RGB to CIE xy chromaticity coordinates."""
-    try:
-        xyz = colour.sRGB_to_XYZ(np.array(rgb) / 255.0)
-        return colour.XYZ_to_xy(xyz)
-    except Exception:
-        return (0.33, 0.33) # Default to white point if conversion fails
+    xyz = colour.sRGB_to_XYZ(np.array(rgb) / 255.0)
+    return colour.XYZ_to_xy(xyz)
 
-# --- MAIN APP ---
-db_ref = init_firebase()
+def closest_color_name(rgb):
+    min_dist, closest = float('inf'), "Unknown"
+    for name, hex_val in CSS4_COLORS.items():
+        dist = np.linalg.norm(np.array(to_rgb(hex_val)) * 255 - np.array(rgb))
+        if dist < min_dist:
+            min_dist, closest = dist, name
+    return closest
 
-if db_ref and ml_model and scaler:
-    st.title("🧪 Live pH & Color Predictor")
-    
-    # --- UI LAYOUT ---
-    control_col, display_col = st.columns([1, 2])
+# --- UI LAYOUT ---
+st.title("🧪 Live pH & Color Predictor")
+st.markdown("This application controls a remote color sensor and predicts the pH category of a sample in real-time.")
 
-    with control_col:
-        st.subheader("💡 LED Controls")
-        
-        # --- NEW CONTROL BUTTONS ---
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Sensor LED ON", use_container_width=True):
-                db_ref.child('control').set({'command': 'sensor_on'})
-                st.toast("Sent 'Sensor ON' command")
-            if st.button("UV LED ON", use_container_width=True):
-                db_ref.child('control').set({'command': 'uv_on'})
-                st.toast("Sent 'UV ON' command")
-        with col2:
-            if st.button("Sensor LED OFF", use_container_width=True):
-                db_ref.child('control').set({'command': 'sensor_off'})
-                st.toast("Sent 'Sensor OFF' command")
-            if st.button("UV LED OFF", use_container_width=True):
-                db_ref.child('control').set({'command': 'uv_off'})
-                st.toast("Sent 'UV OFF' command")
-        
-        st.divider()
-        
-        st.subheader("📊 Live Data")
-        status_placeholder = st.empty()
-        color_placeholder = st.empty()
-        prediction_placeholder = st.empty()
+if db_ref is None or ml_model is None:
+    st.warning("Application cannot start. Please check Firebase connection and model files.")
+else:
+    col1, col2 = st.columns([1, 2])
 
-    with display_col:
-        st.subheader("CIE 1931 Chromaticity Diagram")
-        chart_placeholder = st.empty()
+    with col1:
+        st.subheader("Hardware Control")
+        if st.button("🟢 Sensor LED ON"):
+            db_ref.child('control').set({'command': 'sensor_on'})
+        if st.button("🔴 Sensor LED OFF"):
+            db_ref.child('control').set({'command': 'sensor_off'})
+        if st.button("🟣 UV LED ON"):
+            db_ref.child('control').set({'command': 'uv_on'})
+        if st.button("⚫ UV LED OFF"):
+            db_ref.child('control').set({'command': 'uv_off'})
 
-    # --- LIVE DATA LISTENER ---
-    # This uses a generator to continuously listen for changes in Firebase.
-    def data_listener():
+        # Placeholder for live data display
+        st.subheader("Live Data")
+        data_placeholder = st.empty()
+
+    with col2:
+        st.subheader("Live Chromaticity Diagram")
+        plot_placeholder = st.empty()
+
+    # --- MAIN LIVE LOOP ---
+    # This loop will continuously fetch data and update the UI
+    while True:
         try:
-            for event in db_ref.child('sensor_data').listen():
-                if event.data and isinstance(event.data, dict):
-                    yield event.data
-        except Exception:
-            yield None
+            # Fetch the latest sensor data from Firebase
+            sensor_data = db_ref.child('sensor_data').get()
 
-    for live_data in data_listener():
-        if live_data:
-            r, g, b = live_data.get('r', 0), live_data.get('g', 0), live_data.get('b', 0)
-            rgb_color = [r, g, b]
-            
-            # --- UPDATE UI ELEMENTS ---
-            with status_placeholder.container():
-                st.info("Receiving live data...")
-            
-            with color_placeholder.container():
-                st.markdown(f"**RGB:** `{r}, {g}, {b}`")
-                st.color_picker("Live Color", value=f"#{r:02x}{g:02x}{b:02x}", disabled=True, label_visibility="collapsed")
+            if sensor_data and 'r' in sensor_data:
+                r, g, b = sensor_data['r'], sensor_data['g'], sensor_data['b']
+                rgb = [r, g, b]
+                
+                # Make ML Prediction
+                rgb_scaled = scaler.transform(np.array([rgb]))
+                prediction = ml_model.predict(rgb_scaled)[0]
+                color_name = closest_color_name(rgb)
+                
+                # Update the data display placeholder
+                with data_placeholder.container():
+                    st.color_picker("Current Color", f"rgb({r},{g},{b})")
+                    st.metric("ML Predicted pH Category", prediction)
+                    st.metric("Closest Color Name", color_name)
+                    st.text(f"Raw RGB: ({r}, {g}, {b})")
 
-            # --- ML Prediction ---
-            with prediction_placeholder.container():
-                try:
-                    scaled_data = scaler.transform([rgb_color])
-                    prediction = ml_model.predict(scaled_data)[0]
-                    st.metric("Predicted pH Category", prediction)
-                except Exception as e:
-                    st.warning(f"Could not make prediction: {e}")
+                # Update the plot placeholder
+                with plot_placeholder.container():
+                    fig, ax = plt.subplots(figsize=(8, 8))
+                    wavelength = np.arange(380, 780, 5)
+                    xy_gamut = colour.XYZ_to_xy(colour.wavelength_to_XYZ(wavelength))
+                    ax.plot(xy_gamut[:, 0], xy_gamut[:, 1], color="black", linewidth=1)
+                    
+                    xy_val = rgb_to_xy(rgb)
+                    color_norm = [v / 255 for v in rgb]
+                    
+                    ax.plot(xy_val[0], xy_val[1], "o", markersize=15, color=color_norm, markeredgecolor='black')
+                    ax.set_title("CIE 1931 Chromaticity Diagram")
+                    ax.set_xlabel("x")
+                    ax.set_ylabel("y")
+                    ax.set_xlim(0, 0.8)
+                    ax.set_ylim(0, 0.9)
+                    ax.grid(True)
+                    st.pyplot(fig)
             
-            # --- UPDATE CHART ---
-            with chart_placeholder.container():
-                xy_val = rgb_to_xy(rgb_color)
-                chart_data = pd.DataFrame({'x': [xy_val[0]], 'y': [xy_val[1]]})
-                st.scatter_chart(
-                    chart_data, x='x', y='y',
-                    color=[f"#{r:02x}{g:02x}{b:02x}"],
-                    size=200
-                )
-        else:
-            with status_placeholder.container():
-                st.warning("Waiting for data... Turn on Sensor LED to start.")
+            else:
+                 with data_placeholder.container():
+                    st.info("Waiting for sensor data...")
+
+            # Wait for 1 second before the next update
+            time.sleep(1)
+
+        except Exception as e:
+            st.error(f"An error occurred during the live update: {e}")
+            time.sleep(5)
 
