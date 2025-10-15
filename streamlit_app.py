@@ -1,47 +1,43 @@
 import streamlit as st
+import firebase_admin
+from firebase_admin import credentials, db
 import pandas as pd
 import numpy as np
 import joblib
 import colour
 from matplotlib.colors import to_rgb, CSS4_COLORS
 import matplotlib.pyplot as plt
-import os
 import time
-import firebase_admin
-from firebase_admin import credentials, db
 
-# ==============================================================================
-# --- Page Configuration & Title ---
-# ==============================================================================
-st.set_page_config(
-    page_title="Live pH & Color Predictor",
-    page_icon="🧪",
-    layout="wide"
-)
-
-st.title("🧪 Live pH & Color Predictor")
-# --- TEMPORARY DEBUGGING CODE ---
-# Add this to see exactly what Streamlit is reading from your secrets.
-st.subheader("⚠️ DEBUGGING INFORMATION")
+# --- ULTIMATE DEBUGGER ---
+# This block will run first and tell us if the secrets are formatted correctly.
+st.header("Secrets Debugger")
 try:
-    creds_to_check = st.secrets["firebase_credentials"]
-    st.write("Type of `firebase_credentials` secret:", type(creds_to_check))
-    # The line below will display the credentials in a structured way.
-    st.json(creds_to_check)
+    creds = st.secrets["firebase_credentials"]
+    # Print the type to see if it's a dictionary-like object or a string
+    st.write(f"**Type of `st.secrets['firebase_credentials']`:** `{type(creds)}`")
+
+    # If it has keys, it's a dictionary-like object (AttrDict)
+    if hasattr(creds, 'keys'):
+        st.success("✅ Secrets have been parsed correctly into a dictionary-like object.")
+        st.json(dict(creds))
+    else:
+        st.error("❌ FATAL ERROR: Secrets are being read as a single STRING.")
+        st.warning("This is the root cause of the 'Invalid certificate' error. The text you pasted into the secrets manager is not in the correct TOML format. Please use the converter tool again and follow the steps precisely.")
+        st.text_area("Value being read as a string", str(creds), height=200)
 except Exception as e:
-    st.error(f"Could not access secrets['firebase_credentials']: {e}")
-# --- END OF DEBUGGING CODE ---
-st.write("This web app uses a trained Machine Learning model to predict the pH category based on live RGB color values from a sensor.")
+    st.error(f"An error occurred while trying to read the secrets: {e}")
+# --- END DEBUGGER ---
 
-# ==============================================================================
-# --- Firebase Initialization ---
-# ==============================================================================
 
+# --- App Functions ---
 @st.cache_resource
 def init_firebase():
     """Initialize the Firebase app, returns a reference to the database."""
     try:
+        # Check if the app is already initialized
         if not firebase_admin._apps:
+            # The st.secrets object acts like a dictionary
             cred_dict = st.secrets["firebase_credentials"]
             database_url = st.secrets["firebase_database"]["databaseURL"]
             
@@ -50,151 +46,139 @@ def init_firebase():
                 'databaseURL': database_url
             })
         
+        # Return a reference to the root of the database
         return db.reference('/')
     except Exception as e:
+        # This will now catch the error more gracefully
         st.error(f"Failed to initialize Firebase: {e}")
-        st.info("Please ensure your Firebase credentials and database URL are correctly configured in Streamlit's secrets.")
+        st.info("Please review the debugger output above. The secrets must be parsed correctly for Firebase to initialize.")
         return None
 
-db_ref = init_firebase()
-
-# ==============================================================================
-# --- Session State Initialization ---
-# ==============================================================================
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'latest_rgb' not in st.session_state:
-    st.session_state.latest_rgb = [220, 220, 220] 
-
-# ==============================================================================
-# --- Load Model and Helper Functions ---
-# ==============================================================================
-
-@st.cache_resource
+@st.cache_data
 def load_model_and_scaler():
-    """Load the pre-trained model and scaler."""
-    try:
-        model = joblib.load("gaussian_nb.pkl")
-        scaler = joblib.load("scaler_nb.pkl")
-        return model, scaler
-    except FileNotFoundError:
-        st.error("Error: 'gaussian_nb.pkl' or 'scaler_nb.pkl' not found.")
-        return None, None
-
-ml_model, scaler = load_model_and_scaler()
-
-# === Helper Functions ===
-ph_reference = {
-    1: (255, 0, 0), 2: (255, 51, 0), 3: (255, 102, 0), 4: (255, 153, 0),
-    5: (255, 204, 0), 6: (204, 255, 0), 7: (0, 255, 0), 8: (0, 255, 128),
-    9: (0, 204, 255), 10: (0, 102, 255), 11: (102, 0, 255), 12: (153, 0, 255),
-    13: (204, 0, 255), 14: (153, 0, 153)
-}
+    """Loads the ML model and scaler."""
+    model = joblib.load("gaussian_nb.pkl")
+    scaler = joblib.load("scaler_nb.pkl")
+    return model, scaler
 
 def rgb_to_xy(rgb):
+    """Converts RGB to CIE 1931 xy coordinates."""
+    # Normalize RGB values
     rgb_normalized = np.array(rgb) / 255.0
-    if np.all(rgb_normalized == 0): return [0.3127, 0.3290]
+    # Convert sRGB to XYZ
     xyz = colour.sRGB_to_XYZ(rgb_normalized)
+    # Convert XYZ to xy
     return colour.XYZ_to_xy(xyz)
 
 def closest_color_name(rgb):
-    min_dist, closest = float('inf'), "Unknown"
+    """Finds the closest CSS4 color name for a given RGB value."""
+    min_dist = float('inf')
+    closest_name = "Unknown"
     for name, hex_val in CSS4_COLORS.items():
-        dist = np.linalg.norm(np.array(to_rgb(hex_val)) * 255 - np.array(rgb))
-        if dist < min_dist: min_dist, closest = dist, name
-    return closest
+        ref_rgb = np.array(to_rgb(hex_val)) * 255
+        dist = np.linalg.norm(np.array(rgb) - ref_rgb)
+        if dist < min_dist:
+            min_dist = dist
+            closest_name = name
+    return closest_name
 
-def estimate_ph_from_ref(rgb):
-    min_dist, est_ph = float('inf'), None
-    for ph, ref_rgb in ph_reference.items():
-        dist = np.linalg.norm(np.array(rgb) - np.array(ref_rgb))
-        if dist < min_dist: min_dist, est_ph = dist, ph
-    return est_ph
+# --- Main App Logic ---
+st.set_page_config(layout="wide")
+st.title("🔬 Real-Time pH Predictor Dashboard")
+st.markdown("This dashboard displays live color data from a sensor and predicts the pH category using a trained machine learning model.")
 
-# ==============================================================================
-# --- User Interface & Prediction Logic ---
-# ==============================================================================
+# Initialize Firebase and load models
+db_ref = init_firebase()
+ml_model, scaler = load_model_and_scaler()
 
-if ml_model is None or scaler is None or db_ref is None:
+if not db_ref:
     st.stop()
 
-# --- Control Buttons and Status Display ---
-st.header("Controls")
-col_control1, col_control2, col_status = st.columns([1, 1, 3])
+# --- UI Layout ---
+col1, col2 = st.columns([1, 1.5])
 
-with col_control1:
-    if st.button("▶️ Start Reading", use_container_width=True):
-        st.session_state.is_running = True
-        # Send 'start' command to Firebase
-        db_ref.child("control").set({"command": "start", "timestamp": time.time()})
-        st.rerun()
-
-with col_control2:
-    if st.button("⏹️ Stop Reading", use_container_width=True):
-        st.session_state.is_running = False
-        # Send 'stop' command to Firebase
-        db_ref.child("control").set({"command": "stop", "timestamp": time.time()})
-        st.rerun()
-
-with col_status:
-    if st.session_state.is_running:
-        st.success("Status: Reading live data... (Awaiting data from local script)")
-    else:
-        st.warning("Status: Stopped. Click 'Start Reading' to begin.")
-
-st.divider()
-
-# --- Data Fetching and Display ---
-if st.session_state.is_running:
-    # Fetch the latest RGB data from Firebase
-    firebase_data = db_ref.child("data").get()
-    if firebase_data and 'rgb' in firebase_data and isinstance(firebase_data['rgb'], list) and len(firebase_data['rgb']) == 3:
-        st.session_state.latest_rgb = firebase_data['rgb']
-    
-current_rgb = st.session_state.latest_rgb
-col1, col2 = st.columns([1, 2])
-
-# UI rendering remains largely the same, using `current_rgb`
 with col1:
-    st.subheader("Current Color")
-    color_norm = [v / 255.0 for v in current_rgb]
-    fig_color, ax_color = plt.subplots(figsize=(2, 2)); ax_color.imshow([[color_norm]]); ax_color.axis('off'); st.pyplot(fig_color)
-    st.subheader("Live RGB Values")
-    st.write(f"**R:** {current_rgb[0]}, **G:** {current_rgb[1]}, **B:** {current_rgb[2]}")
+    st.header("🎮 Sensor Control & Status")
+    
+    # Control Buttons
+    if st.button("▶️ Start Reading", key="start"):
+        db_ref.child('control').set({'command': 'start'})
+        st.success("Sent 'Start' command!")
+
+    if st.button("⏹️ Stop Reading", key="stop"):
+        db_ref.child('control').set({'command': 'stop'})
+        st.warning("Sent 'Stop' command!")
+
+    st.markdown("---")
+    
+    # Live Data Display
+    status_placeholder = st.empty()
+    color_placeholder = st.empty()
+    metrics_placeholder = st.empty()
 
 with col2:
-    st.subheader("Analysis & Predictions")
-    if sum(current_rgb) == 0:
-        ml_ph, est_ph, color_name = "Black", "-", "Black"
-    else:
-        scaled_rgb = scaler.transform([current_rgb])
-        ml_ph = ml_model.predict(scaled_rgb)[0]
-        est_ph = estimate_ph_from_ref(current_rgb)
-        color_name = closest_color_name(current_rgb)
-    st.metric("🤖 ML Predicted pH Category", str(ml_ph))
-    st.metric("🎨 Closest Color Name", color_name)
-    st.metric("📊 Estimated pH (from Ref. Table)", str(est_ph))
+    st.header("📊 Chromaticity Diagram (Live)")
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Plot the spectral locus
+    wavelengths = np.arange(380, 781, 5)
+    xy_locus = colour.XYZ_to_xy(colour.wavelength_to_XYZ(wavelengths))
+    ax.plot(xy_locus[:, 0], xy_locus[:, 1], color='black', linewidth=1)
+    
+    ax.set_title("CIE 1931 Chromaticity Diagram")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_xlim(0, 0.8)
+    ax.set_ylim(0, 0.9)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_aspect('equal', adjustable='box')
+    
+    # Live data point
+    live_point, = ax.plot([], [], 'o', markersize=15, markeredgecolor='black')
+    
+    plot_placeholder = st.pyplot(fig)
 
-# --- Chromaticity Diagram ---
-st.subheader("CIE 1931 Chromaticity Diagram")
-fig_cie, ax_cie = plt.subplots(figsize=(8, 6))
-wavelength = np.arange(380, 780, 5)
-xy_gamut = colour.XYZ_to_xy(colour.wavelength_to_XYZ(wavelength))
-ax_cie.plot(xy_gamut[:, 0], xy_gamut[:, 1], "k-"); ax_cie.set_title("Color Location in CIE 1931 Space")
-ax_cie.set_xlabel("x"); ax_cie.set_ylabel("y"); ax_cie.set_xlim(0, 0.8); ax_cie.set_ylim(0, 0.9); ax_cie.grid(True)
-xy_val = rgb_to_xy(current_rgb)
-ax_cie.plot(xy_val[0], xy_val[1], "o", markersize=12, markeredgecolor='k', color=[v/255.0 for v in current_rgb]); st.pyplot(fig_cie)
 
-# --- Cloud Deployment Notes ---
-with st.expander("ℹ️ How This Works", expanded=True):
-    st.info("""
-        - When you click **Start/Stop**, this app writes a command to a Firebase Realtime Database.
-        - A **local Python script** (running on the computer with the Arduino) listens for these commands.
-        - The local script turns the sensor ON/OFF and sends the live RGB data back to the Firebase database.
-        - This web app reads that data from Firebase and updates the display in real-time.
-    """)
+# --- Real-Time Loop ---
+while True:
+    try:
+        # Listen for data changes from Firebase
+        data = db_ref.child('sensor_data').get()
+        status = db_ref.child('control').get()
 
-# --- Auto-refresh Loop ---
-if st.session_state.is_running:
-    time.sleep(1) # Refresh every 1 second
-    st.rerun()
+        if data and isinstance(data, dict):
+            rgb = [data.get('r', 0), data.get('g', 0), data.get('b', 0)]
+            
+            # --- Update UI Elements ---
+            with status_placeholder.container():
+                 st.subheader("Live Status")
+                 current_status = status.get('command', 'stopped').capitalize() if status else 'Stopped'
+                 st.metric(label="Sensor Status", value=current_status)
+
+            with color_placeholder.container():
+                st.subheader("Live Color Preview")
+                st.color_picker("Current color from sensor:", f"rgb({rgb[0]}, {rgb[1]}, {rgb[2]})", disabled=True)
+            
+            # Perform predictions
+            scaled_rgb = scaler.transform([rgb])
+            prediction = ml_model.predict(scaled_rgb)[0]
+            color_name = closest_color_name(rgb)
+
+            with metrics_placeholder.container():
+                st.subheader("Live Predictions & Metrics")
+                st.metric(label="ML Predicted pH Category", value=str(prediction))
+                st.metric(label="Closest Color Name", value=color_name)
+                st.text(f"Raw RGB: {rgb[0]}, {rgb[1]}, {rgb[2]}")
+
+            # Update plot
+            xy_val = rgb_to_xy(rgb)
+            live_point.set_data([xy_val[0]], [xy_val[1]])
+            live_point.set_color(np.array(rgb) / 255.0)
+            plot_placeholder.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"An error occurred during the live update loop: {e}")
+        break # Exit the loop on error to prevent crashing
+    
+    time.sleep(1) # Refresh every second
+
