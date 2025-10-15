@@ -41,9 +41,7 @@ st.write("This web app uses a trained Machine Learning model to predict the pH c
 def init_firebase():
     """Initialize the Firebase app, returns a reference to the database."""
     try:
-        # Check if the app is already initialized
         if not firebase_admin._apps:
-            # Load credentials from Streamlit's secrets
             cred_dict = st.secrets["firebase_credentials"]
             database_url = st.secrets["firebase_database"]["databaseURL"]
             
@@ -52,7 +50,6 @@ def init_firebase():
                 'databaseURL': database_url
             })
         
-        # Return a reference to the root of the database
         return db.reference('/')
     except Exception as e:
         st.error(f"Failed to initialize Firebase: {e}")
