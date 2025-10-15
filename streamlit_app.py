@@ -9,27 +9,6 @@ from matplotlib.colors import to_rgb, CSS4_COLORS
 import matplotlib.pyplot as plt
 import time
 
-# --- ULTIMATE DEBUGGER ---
-# This block will run first and tell us if the secrets are formatted correctly.
-st.header("Secrets Debugger")
-try:
-    creds = st.secrets["firebase_credentials"]
-    # Print the type to see if it's a dictionary-like object or a string
-    st.write(f"**Type of `st.secrets['firebase_credentials']`:** `{type(creds)}`")
-
-    # If it has keys, it's a dictionary-like object (AttrDict)
-    if hasattr(creds, 'keys'):
-        st.success("✅ Secrets have been parsed correctly into a dictionary-like object.")
-        st.json(dict(creds))
-    else:
-        st.error("❌ FATAL ERROR: Secrets are being read as a single STRING.")
-        st.warning("This is the root cause of the 'Invalid certificate' error. The text you pasted into the secrets manager is not in the correct TOML format. Please use the converter tool again and follow the steps precisely.")
-        st.text_area("Value being read as a string", str(creds), height=200)
-except Exception as e:
-    st.error(f"An error occurred while trying to read the secrets: {e}")
-# --- END DEBUGGER ---
-
-
 # --- App Functions ---
 @st.cache_resource
 def init_firebase():
@@ -37,11 +16,25 @@ def init_firebase():
     try:
         # Check if the app is already initialized
         if not firebase_admin._apps:
-            # The st.secrets object acts like a dictionary
-            cred_dict = st.secrets["firebase_credentials"]
+            # Manually build a standard Python dictionary from secrets
+            # This is the most robust method to ensure compatibility.
+            creds_dict = {
+                "type": st.secrets["firebase_credentials"]["type"],
+                "project_id": st.secrets["firebase_credentials"]["project_id"],
+                "private_key_id": st.secrets["firebase_credentials"]["private_key_id"],
+                "private_key": st.secrets["firebase_credentials"]["private_key"],
+                "client_email": st.secrets["firebase_credentials"]["client_email"],
+                "client_id": st.secrets["firebase_credentials"]["client_id"],
+                "auth_uri": st.secrets["firebase_credentials"]["auth_uri"],
+                "token_uri": st.secrets["firebase_credentials"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["firebase_credentials"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["firebase_credentials"]["client_x509_cert_url"],
+            }
+            
             database_url = st.secrets["firebase_database"]["databaseURL"]
             
-            cred = credentials.Certificate(cred_dict)
+            cred = credentials.Certificate(creds_dict)
+            
             firebase_admin.initialize_app(cred, {
                 'databaseURL': database_url
             })
@@ -51,7 +44,7 @@ def init_firebase():
     except Exception as e:
         # This will now catch the error more gracefully
         st.error(f"Failed to initialize Firebase: {e}")
-        st.info("Please review the debugger output above. The secrets must be parsed correctly for Firebase to initialize.")
+        st.info("Please ensure your Firebase credentials and database URL are correctly configured in Streamlit's secrets.")
         return None
 
 @st.cache_data
