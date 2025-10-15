@@ -21,7 +21,6 @@ st.set_page_config(
 def init_firebase():
     """Initialize the Firebase app, returns a reference to the database."""
     try:
-        # Build the credentials dictionary from secrets
         creds_dict = {
             "type": st.secrets["firebase_credentials"]["type"],
             "project_id": st.secrets["firebase_credentials"]["project_id"],
@@ -43,7 +42,6 @@ def init_firebase():
         return db.reference('/')
     except Exception as e:
         st.error(f"Failed to initialize Firebase: {e}")
-        st.info("Please ensure your Firebase secrets are correctly configured.")
         return None
 
 db_ref = init_firebase()
@@ -51,7 +49,6 @@ db_ref = init_firebase()
 # --- LOAD ML MODEL AND SCALER ---
 @st.cache_resource
 def load_model_and_scaler():
-    """Loads the ML model and scaler."""
     try:
         model = joblib.load("gaussian_nb.pkl")
         scaler = joblib.load("scaler_nb.pkl")
@@ -80,7 +77,7 @@ st.title("🧪 Live pH & Color Predictor")
 st.markdown("This application controls a remote color sensor and predicts the pH category of a sample in real-time.")
 
 if db_ref is None or ml_model is None:
-    st.warning("Application cannot start. Please check Firebase connection and model files.")
+    st.warning("Application cannot start. Check Firebase connection and model files.")
 else:
     col1, col2 = st.columns([1, 2])
 
@@ -95,7 +92,6 @@ else:
         if st.button("⚫ UV LED OFF"):
             db_ref.child('control').set({'command': 'uv_off'})
 
-        # Placeholder for live data display
         st.subheader("Live Data")
         data_placeholder = st.empty()
 
@@ -104,37 +100,32 @@ else:
         plot_placeholder = st.empty()
 
     # --- MAIN LIVE LOOP ---
-    # This loop will continuously fetch data and update the UI
     while True:
         try:
-            # Fetch the latest sensor data from Firebase
             sensor_data = db_ref.child('sensor_data').get()
 
             if sensor_data and 'r' in sensor_data:
                 r, g, b = sensor_data['r'], sensor_data['g'], sensor_data['b']
                 rgb = [r, g, b]
                 
-                # Make ML Prediction
                 rgb_scaled = scaler.transform(np.array([rgb]))
                 prediction = ml_model.predict(rgb_scaled)[0]
                 color_name = closest_color_name(rgb)
                 
-                # Update the data display placeholder
                 with data_placeholder.container():
-                    st.color_picker("Current Color", f"rgb({r},{g},{b})")
+                    st.color_picker("Current Color", f"rgb({r},{g},{b})", key="color_picker")
                     st.metric("ML Predicted pH Category", prediction)
                     st.metric("Closest Color Name", color_name)
                     st.text(f"Raw RGB: ({r}, {g}, {b})")
 
-                # Update the plot placeholder
                 with plot_placeholder.container():
-                    fig, ax = plt.subplots(figsize=(8, 8))
+                    fig, ax = plt.subplots()
                     wavelength = np.arange(380, 780, 5)
                     xy_gamut = colour.XYZ_to_xy(colour.wavelength_to_XYZ(wavelength))
                     ax.plot(xy_gamut[:, 0], xy_gamut[:, 1], color="black", linewidth=1)
                     
                     xy_val = rgb_to_xy(rgb)
-                    color_norm = [v / 255 for v in rgb]
+                    color_norm = [v / 255.0 for v in rgb]
                     
                     ax.plot(xy_val[0], xy_val[1], "o", markersize=15, color=color_norm, markeredgecolor='black')
                     ax.set_title("CIE 1931 Chromaticity Diagram")
@@ -147,12 +138,10 @@ else:
             
             else:
                  with data_placeholder.container():
-                    st.info("Waiting for sensor data...")
+                    st.info("Waiting for sensor data... Turn on the Sensor LED to begin.")
 
-            # Wait for 1 second before the next update
             time.sleep(1)
 
         except Exception as e:
             st.error(f"An error occurred during the live update: {e}")
             time.sleep(5)
-
